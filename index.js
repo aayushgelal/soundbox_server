@@ -2,13 +2,18 @@ const mqtt = require('mqtt');
 const WebSocket = require('ws');
 const { PrismaClient } = require('@prisma/client');
 const express = require('express'); // Added Express
+const { PrismaPg } = require('@prisma/adapter-pg'); // Required for Prisma 7
+const { Pool } = require('pg'); // Required for PostgreSQL
 
-const prisma = new PrismaClient();
+// --- 1. PRISMA 7 INITIALIZATION ---
+// Create a connection pool using your Supabase URL
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const adapter = new PrismaPg(pool);
+
+const prisma = new PrismaClient({adapter});
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- 1. THE "HEALTH CHECK" SERVER ---
-// This part gives Render a web address to look at
 app.get('/', (req, res) => {
   res.send('BizTrack Relay is Running 🚀');
 });

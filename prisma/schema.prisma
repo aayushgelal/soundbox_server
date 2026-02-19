@@ -1,0 +1,101 @@
+// This is your updated Prisma schema for the Soundbox POS system
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  password     String
+  businessName String
+  email        String?
+  phone        String?
+  role         String   @default("MERCHANT") // MERCHANT | ADMIN
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relationships
+  devices       Device[]
+  records       EarningRecord[]
+  subscriptions Subscription[]
+}
+
+model Device {
+  id           String   @id @default(cuid())
+  name         String
+  serialNumber String   @unique
+  location     String?
+  type         String   @default("ET389") // Specifically for your MoreFun model
+  isActive     Boolean  @default(true)
+  
+  // Fonepay Gateway Credentials (Specific to each hardware/store)
+  fonepayMerchantCode String?
+  fonepayUsername     String?
+  fonepayPassword     String?
+  fonepaySecretKey    String?  // Encrypt this before saving in a real app
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  records      EarningRecord[]
+  subscription Subscription?
+}
+
+model EarningRecord {
+  id          String   @id @default(cuid())
+  amount      Float    // Always stored in the smallest unit or as decimal
+  currency    String   @default("NPR")
+  description String?
+  category    String   @default("Sales")
+  status      String   @default("SUCCESS") // SUCCESS | FAILED | PENDING
+  prn         String   @unique             // Fonepay's unique transaction reference
+  source      String   @default("device")  // device | manual
+  recordedAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId    String?
+  device      Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+}
+
+model Subscription {
+  id           String    @id @default(cuid())
+  plan         String    @default("monthly") // monthly | yearly
+  amount       Float
+  currency     String    @default("NPR")
+  status       String    @default("active")  // active | expired | pending
+  startDate    DateTime  @default(now())
+  endDate      DateTime
+  autoRenew    Boolean   @default(true)
+  lastPaidAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId     String    @unique
+  device       Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  payments     SubscriptionPayment[]
+}
+
+model SubscriptionPayment {
+  id             String   @id @default(cuid())
+  amount         Float
+  currency       String   @default("NPR")
+  status         String   @default("completed")
+  paymentMethod  String   @default("fonepay") // Defaulting to your primary gateway
+  transactionRef String?  @unique
+  paidAt         DateTime @default(now())
+
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+}

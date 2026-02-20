@@ -1,0 +1,136 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <WebSocketsClient.h>
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
+
+const char* ssid = "aayushgelal_2";
+const char* password = "CLB43A66DA";
+const char* nextjs_api = "http://192.168.1.64:3000/api/fonepay-proxy";
+
+WebSocketsClient webSocket;
+bool isWaiting = false;
+
+void onWsEvent(WStype_t type, uint8_t * payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED:
+      Serial.println("[WSS] Handshake Successful. Monitoring Fonepay...");
+      break;
+
+    case WStype_TEXT: {
+      String rawData = (char*)payload;
+      Serial.println("Received WSS");
+
+      
+      // Step 1: Parse the OUTER JSON
+      // This gets us 'merchantId', 'deviceId', and the 'transactionStatus' string
+      DynamicJsonDocument outerDoc(2048);
+      DeserializationError error = deserializeJson(outerDoc, rawData);
+
+      if (error) {
+        Serial.print(F("Outer Parse failed: "));
+        Serial.println(error.f_str());
+        return;
+      }
+
+      // Step 2: Check if transactionStatus exists
+      if (outerDoc.containsKey("transactionStatus")) {
+        const char* innerJsonStr = outerDoc["transactionStatus"];
+        
+        // Step 3: Parse the INNER JSON (the escaped string)
+        DynamicJsonDocument innerDoc(1024);
+        DeserializationError innerError = deserializeJson(innerDoc, innerJsonStr);
+
+        if (!innerError) {
+          // Step 4: Final Validation
+          bool isPaid = innerDoc["paymentSuccess"] | false;
+          float amount = innerDoc["amount"] | 0.0;
+
+          if (isPaid) {
+            Serial.println("\n************************************");
+            Serial.printf("💰 SUCCESS! NPR %.2f RECEIVED\n", amount);
+            Serial.println("************************************\n");
+
+            // --- TRIGGER AUDIO ---
+
+            // Clean up to save ESP32 memory
+            webSocket.disconnect();
+            isWaiting = false;
+          }
+        }
+      }
+      break;
+    }
+    case WStype_DISCONNECTED:
+      Serial.println("[WSS] Connection Terminated.");
+      isWaiting = false;
+      break;
+  }
+}
+
+void startStealthConnection(String fullUrl) {
+  // Extract the path: /merchantEndPoint/DEVICE_ID/MERCHANT_ID/Y
+  int pathStart = fullUrl.indexOf("/", 6); 
+  String path = fullUrl.substring(pathStart);
+
+  // --- THE STEALTH HANDSHAKE HEADERS ---
+  // These headers tell Fonepay "I am a real browser, not a robot."
+  String headers = "Origin: https://login.fonepay.com\r\n";
+  headers += "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n";
+  headers += "Accept-Encoding: gzip, deflate, br\r\n";
+  headers += "Accept-Language: en-US,en;q=0.9\r\n";
+  headers += "Cache-Control: no-cache\r\n";
+  headers += "Pragma: no-cache";
+
+  webSocket.setExtraHeaders(headers.c_str());
+  
+  // Fonepay uses port 443 for wss://
+  webSocket.beginSSL("ws.fonepay.com", 443, path.c_str());
+  webSocket.onEvent(onWsEvent);
+  webSocket.setReconnectInterval(5000);
+  
+  isWaiting = true;
+  Serial.println("[WSS] Attempting 101 Handshake...");
+}
+
+void fetchFromNextJS(float amt) {
+  HTTPClient http;
+  http.begin(nextjs_api);
+  http.addHeader("Content-Type", "application/json");
+
+  StaticJsonDocument<256> req;
+  req["username"] = "9848378159";
+  req["password"] = "Ankit#2059";
+  req["amount"] = amt;
+  
+  String json;
+  serializeJson(req, json);
+  
+  int code = http.POST(json);
+  if (code == 200) {
+    StaticJsonDocument<1536> res;
+    deserializeJson(res, http.getString());
+    
+    Serial.println("\n[API] QR Generated: " + res["qrMessage"].as<String>());
+    
+    // START THE STEALTH LISTENER
+    startStealthConnection(res["websocketId"].as<String>());
+  }
+  http.end();
+}
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+  Serial.println("\n[BIZTRACK] Edge POS Online.");
+}
+
+void loop() {
+  if (isWaiting) webSocket.loop();
+
+  if (Serial.available()) {
+    float amt = Serial.readStringUntil('\n').toFloat();
+    if (amt > 0) fetchFromNextJS(amt);
+  }
+}

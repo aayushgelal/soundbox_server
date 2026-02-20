@@ -1,18 +1,24 @@
+require('dotenv').config(); // MUST BE AT THE VERY TOP
 const mqtt = require('mqtt');
 const WebSocket = require('ws');
 const { PrismaClient } = require('@prisma/client');
-const express = require('express');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { Pool } = require('pg');
+const express = require('express');
 
-// --- 1. PRISMA 7 INITIALIZATION (Performance Optimized) ---
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  console.error("❌ ERROR: DATABASE_URL is not defined in .env file!");
+  process.exit(1);
+}
+
 const pool = new Pool({ 
-  connectionString: process.env.DATABASE_URL,
-  max: 20 // Allow up to 20 simultaneous DB connections
+  connectionString: connectionString,
+  max: 20 
 });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 

@@ -2,3 +2,5 @@ git pull
 npm install         # If you added new libraries
 npx prisma generate # If you changed your database schema
 pm2 restart biztrack-relay
+
+ ssh -i "ssh.key" ubuntu@140.245.242.253    

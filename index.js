@@ -12,75 +12,106 @@ const prisma = new PrismaClient({ adapter });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => console.log(`📡 HEMIPAY Gateway active on port ${PORT}`));
 
-app.get('/', (req, res) => res.send('BizTrack Static-QR Relay: Active 🚀'));
-app.listen(PORT, '0.0.0.0', () => console.log(`📡 API Gateway on port ${PORT}`));
+// --- 2. HELPER FUNCTIONS ---
+// Generates unique message_id as required by the protocol [cite: 5, 39, 67]
+const getMsgId = () => Math.floor(Math.random() * 10000000000).toString();
+// Generates current Unix timestamp in seconds 
+const getTimestamp = () => Math.floor(Date.now() / 1000).toString();
 
-// --- 2. MQTT CONFIG ---
+// --- 3. MQTT LOGIC ---
 const client = mqtt.connect("mqtt://127.0.0.1:1883", {
-  clientId: 'BIZTRACK_MASTER_RELAY',
-  // Note: Using anonymous for your testing phase as requested
+  clientId: 'BIZTRACK_MASTER_RELAY'
 });
 
 client.on('connect', () => {
-  client.subscribe('biztrack/+/request_qr', { qos: 1 });
-  console.log("🚀 Connected. Listening for 10,000 devices (Static QR Mode)...");
+  // Subscribing to dynamic device messages [User Protocol Info]
+  client.subscribe('+/pubmsg', { qos: 1 });
+  console.log("🚀 HEMIPAY Relay Connected. Monitoring +/pubmsg...");
 });
 
 client.on('message', async (topic, message) => {
-  const serialNumber = topic.split('/')[1];
+  // Extract Serial Number from Topic (SN/pubmsg) [User Protocol Info]
+  const serialNumber = topic.split('/')[0];
   let payload;
   
   try {
     payload = JSON.parse(message.toString());
   } catch (e) { return; }
 
-  console.log(`[REQ] ${serialNumber} fetching static QR for NPR ${payload.amount}`);
+  console.log(`[REQ] ${serialNumber} requesting NPR ${payload.amount}`);
 
   try {
-    // --- 3. DATABASE LOOKUP (Static QR) ---
+    // Database lookup for static QR code
     const device = await prisma.device.findUnique({
       where: { serialNumber: serialNumber },
       include: { user: true }
     });
 
     if (!device || !device.fonepayMerchantCode) {
-      console.error(`❌ Missing merchant code for: ${serialNumber}`);
+      console.error(`❌ Merchant code missing for ${serialNumber}`);
       return;
     }
 
-    // --- 4. SEND STATIC QR TO DISPLAY ---
-    client.publish(`biztrack/${serialNumber}/display`, JSON.stringify({
-      action: "DISPLAY_QR",
-      qr_content: device.fonepayMerchantCode, // From your DB column
-      amount: payload.amount,
-      merchantName: device.user.businessName
-    }), { qos: 1 });
+    const orderId = `ORD-${Date.now()}`; // Unique transaction ID [cite: 43, 64]
 
-    // --- 5. SIMULATE PAYMENT (SMS PARSING MOCK) ---
-    console.log(`⏳ Waiting 4 seconds to simulate SMS payment confirmation...`);
-    
+    // --- STEP 1: PUSH DYNAMIC QR SCREEN  ---
+    const waitPaymentPacket = {
+      "message_id": getMsgId(),
+      "time_stamp": getTimestamp(),
+      "device_sn": serialNumber,
+      "packet_type": "wait_payment",
+      "content": {
+        "amount_due": parseFloat(payload.amount),
+        "order_id": orderId,
+        "payment_timeout": 60, // Returns to home after 60s 
+        "screen_content_config": {
+          "wait_payment_screen_qrcode_1_config": {
+            "txt": device.fonepayMerchantCode, // QR data [cite: 46]
+            "hei": 210 // Max height [cite: 47]
+          },
+          "wait_payment_screen_label_3_config": {
+            "txt": `${payload.amount} NPR`,
+            "hei": 24, // Medium font [cite: 54]
+            "col": "FF0000" // Red text [cite: 52]
+          }
+        }
+      }
+    };
+
+    client.publish(`/LLZN/${serialNumber}`, JSON.stringify(waitPaymentPacket));
+    console.log(`[QR_SENT] Pushed wait_payment screen to ${serialNumber}`);
+
+    // --- STEP 2: SIMULATE PAYMENT SUCCESS AFTER 4s ---
     setTimeout(async () => {
-      console.log(`🔔 Simulating Success for ${serialNumber}...`);
+      console.log(`🔔 Simulating success for ${serialNumber}...`);
 
-      // Record transaction in Supabase
+      // Record in Supabase
       await prisma.earningRecord.create({
         data: {
           amount: parseFloat(payload.amount),
-          prn: `SIM-${Date.now()}`, // Simulated PRN
+          prn: orderId,
           userId: device.userId,
           deviceId: device.id,
-          description: `Static QR Payment - ${device.user.businessName}`
+          description: `Static QR Payment at ${device.user.businessName}`
         }
       });
 
-      // Trigger the soundbox voice
-      client.publish(`biztrack/${serialNumber}/voice`, JSON.stringify({
-        action: "PLAY_AUDIO",
-        amount: payload.amount
-      }), { qos: 1 });
+      // Send payment announcement and trigger audio [cite: 2, 4, 62]
+      const paymentPacket = {
+        "message_id": getMsgId(),
+        "time_stamp": getTimestamp(),
+        "device_sn": serialNumber,
+        "packet_type": "payment",
+        "content": {
+          "play_payment_amount": parseFloat(payload.amount),
+          "order_id": orderId // Must match original order_id to clear screen 
+        }
+      };
 
-      console.log(`[PAID] Simulated success sent to ${serialNumber}`);
+      client.publish(`/LLZN/${serialNumber}`, JSON.stringify(paymentPacket));
+      console.log(`[PAID] Success command sent to ${serialNumber}`);
     }, 4000);
 
   } catch (err) {

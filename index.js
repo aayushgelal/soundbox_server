@@ -36,7 +36,7 @@ client.on('message', async (topic, message) => {
     // Only process payment requests to avoid loops
     if (payload.packet_type !== 'request_payment') return;
 
-    const amount = payload.content ? payload.content.amount_due : null; [cite: 206]
+    const amount = payload.content ? payload.content.amount_due : null; 
     if (!serialNumber || amount === null) return;
 
     console.log(`[REQ] ${serialNumber} requesting NPR ${amount}`);

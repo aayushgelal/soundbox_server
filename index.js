@@ -82,7 +82,7 @@ client.on('message', async (topic, message) => {
       // -------------------- FIXED HANDSHAKE --------------------
       // IMPORTANT: NEW UNIQUE message_id (NOT SAME AS REQUEST)
       const handshakeRsp = {
-        message_id: getMsgId(),  // ✅ FIXED
+        message_id: payload.message_id,   // ✅ FIXED
         time_stamp: getTimestamp(),
         device_sn: serialNumber,
         packet_type: "rsp_request_payment",

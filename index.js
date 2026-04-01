@@ -37,7 +37,7 @@ client.on('connect', () => {
   console.log("✅ MQTT Connected");
 
   // Device publishes here
-  client.subscribe('+/pubmsg', { qos: 1 }), (err) => {
+  client.subscribe('+/pubmsg', { qos: 1 }, (err) => {
     if (err) console.error("❌ Subscribe error:", err);
     else console.log("📡 Listening to devices...");
   });

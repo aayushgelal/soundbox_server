@@ -37,7 +37,7 @@ client.on('connect', () => {
   console.log("✅ MQTT Connected");
 
   // Device publishes here
-  client.subscribe('/LLZN/+', { qos: 1 }, (err) => {
+  client.subscribe('+/pubmsg', { qos: 1 }), (err) => {
     if (err) console.error("❌ Subscribe error:", err);
     else console.log("📡 Listening to devices...");
   });
@@ -54,7 +54,7 @@ client.on('reconnect', () => {
 // -------------------- MAIN HANDLER --------------------
 client.on('message', async (topic, message) => {
   try {
-    const serialNumber = topic.split('/').filter(p => p && p !== 'LLZN')[0];
+    const serialNumber = topic.split('/')[0];
     const payload = JSON.parse(message.toString());
 
     console.log(`📥 ${serialNumber}`, payload.packet_type);

@@ -8,38 +8,38 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
-// HELPER: Generates unique message IDs 
-const getMsgId = () => Math.floor(Math.random() * 10000000000).toString();
-// HELPER: Accurate Unix timestamp to seconds only [cite: 29, 96, 202, 302]
-const getTimestamp = () => Math.floor(Date.now() / 1000).toString();
+// Protocol Helpers
+const getMsgId = () => Math.floor(Math.random() * 10000000000).toString(); // 
+const getTimestamp = () => Math.floor(Date.now() / 1000).toString(); // [cite: 29, 96, 202]
 
 const client = mqtt.connect("mqtt://127.0.0.1:1883", {
   clientId: 'BIZTRACK_MASTER_RELAY',
   username: 'aayush',
   password: 'Ankit#2059',
-  clean: false // Maintain persistent session
+  clean: false
 });
 
 client.on('connect', () => {
+  // THE FIX: Subscribe to the topic the device PUBLISHES on (/LLZN/SN)
   client.subscribe('/LLZN/+', { qos: 1 });
-  console.log("✅ Server online. Strictly following Protocol V1.1.");
+  console.log("✅ Relay Online. Listening for hardware on /LLZN/+");
 });
 
 client.on('message', async (topic, message) => {
   try {
-    const serialNumber = topic.split('/').filter(p => p && p !== 'LLZN')[0];
-    let payload;
+    // Correct Topic Parsing for /LLZN/2602270002
+    const parts = topic.split('/').filter(p => p && p !== 'LLZN');
+    const serialNumber = parts[0]; 
     
-    try {
-      payload = JSON.parse(message.toString());
-    } catch (e) { return; }
+    const payload = JSON.parse(message.toString());
 
-    // ONLY process if the device sends 'request_payment'
+    // Only process payment requests to avoid loops
     if (payload.packet_type !== 'request_payment') return;
 
-    // Correct JSON Path per your raw logs: payload.content.amount_due
-    const amount = payload.content ? payload.content.amount_due : null;
+    const amount = payload.content ? payload.content.amount_due : null; [cite: 206]
     if (!serialNumber || amount === null) return;
+
+    console.log(`[REQ] ${serialNumber} requesting NPR ${amount}`);
 
     const device = await prisma.device.findUnique({
       where: { serialNumber: serialNumber },
@@ -48,55 +48,58 @@ client.on('message', async (topic, message) => {
 
     if (!device) return;
 
-    // Use a numeric string for Order ID [cite: 178, 262]
+    // Numeric-style Order ID for matching [cite: 178, 262]
     const currentOrderId = Date.now().toString();
 
-    // --- STEP 1: Push Dynamic QR (wait_payment) [cite: 151-155] ---
+    // --- STEP 1: PUSH DYNAMIC QR (wait_payment) [cite: 151-155] ---
+    // THE FIX: Publish to the topic the device SUBSCRIBES to (SN/pubmsg)
     const waitPaymentPacket = {
-      "message_id": getMsgId(), // Unique ID [cite: 200-201]
+      "message_id": getMsgId(), // [cite: 200, 201]
       "time_stamp": getTimestamp(), // [cite: 202]
       "device_sn": serialNumber, // [cite: 203]
-      "packet_type": "wait_payment", // [cite: 175, 204]
-      "content": { // [cite: 176, 205]
-        "amount_due": parseFloat(amount), // [cite: 177, 206]
-        "order_id": currentOrderId, // [cite: 178, 207]
-        "payment_timeout": 60, // [cite: 179, 208]
-        "screen_content_config": { // [cite: 183, 210]
-          "wait_payment_screen_qrcode_1_config": { // [cite: 184, 211]
-            "txt": device.fonepayMerchantCode, // QR data [cite: 186, 212]
-            "hei": 210 // Max height [cite: 189, 213]
+      "packet_type": "wait_payment", // [cite: 204]
+      "content": {
+        "amount_due": parseFloat(amount), // [cite: 206]
+        "order_id": currentOrderId, // [cite: 207]
+        "payment_timeout": 60, // [cite: 208, 209]
+        "screen_content_config": {
+          "wait_payment_screen_qrcode_1_config": {
+            "txt": device.fonepayMerchantCode, // [cite: 186, 212]
+            "x": 1, // MANDATORY COORDINATE [cite: 187, 214]
+            "y": 1, // MANDATORY COORDINATE [cite: 188, 217]
+            "hei": 210 // [cite: 189, 213]
           },
-          "wait_payment_screen_label_3_config": { // [cite: 190, 228]
+          "wait_payment_screen_label_3_config": {
             "txt": `${amount} NPR`, // [cite: 191, 229]
-            "hei": 24, // Medium font [cite: 106, 193, 232]
-            "col": "FF0000" // Red [cite: 118-119, 194, 222, 245-246]
+            "x": 1, // MANDATORY COORDINATE [cite: 192, 236]
+            "hei": 24, // [cite: 193, 232]
+            "col": "FF0000" // [cite: 194, 222, 245]
           }
         }
       }
     };
 
     client.publish(`${serialNumber}/pubmsg`, JSON.stringify(waitPaymentPacket));
-    console.log(`[QR_SENT] Serial: ${serialNumber} | Amount: ${amount}`);
+    console.log(`[QR_SENT] Pushed wait_payment to ${serialNumber}/pubmsg`);
 
-    // --- STEP 2: Send Result Result (payment) [cite: 151, 154, 252-253] ---
-    setTimeout(async () => {
+    // --- STEP 2: ANNOUNCE SUCCESS (payment) [cite: 252-254] ---
+    setTimeout(() => {
       const paymentPacket = {
-        "message_id": getMsgId(), // Unique ID [cite: 27-28]
+        "message_id": getMsgId(), // [cite: 256]
         "time_stamp": getTimestamp(), // [cite: 257]
         "device_sn": serialNumber, // [cite: 258]
-        "packet_type": "payment", // [cite: 21, 259, 266]
-        "content": { // [cite: 260]
-          "play_payment_amount": parseFloat(amount), // [cite: 23, 261, 267]
-          "order_id": currentOrderId // MUST match Step 1 [cite: 262, 268-269]
+        "packet_type": "payment", // [cite: 259, 266]
+        "content": {
+          "play_payment_amount": parseFloat(amount), // [cite: 261, 267]
+          "order_id": currentOrderId // MUST match Step 1 [cite: 262, 268, 269]
         }
       };
 
       client.publish(`${serialNumber}/pubmsg`, JSON.stringify(paymentPacket));
-      console.log(`[PAID_SENT] Audio triggered for ${serialNumber}`);
+      console.log(`[PAID] Success sent to ${serialNumber}/pubmsg`);
     }, 4000);
 
   } catch (err) {
-    // This block prevents the 'Socket error' by catching errors before they kill the script
-    console.error("🔥 CRITICAL SERVER ERROR:", err.message);
+    console.error("Relay processing error:", err.message);
   }
 });

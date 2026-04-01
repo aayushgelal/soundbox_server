@@ -1,138 +1,119 @@
-require('dotenv').config(); // Load environment variables first
+require('dotenv').config();
 const mqtt = require('mqtt');
 const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { Pool } = require('pg');
 const express = require('express');
 
-// --- 1. DATABASE INITIALIZATION (Supabase via Prisma 7) ---
-const pool = new Pool({ 
-  connectionString: process.env.DATABASE_URL, 
-  max: 20 // Optimized for concurrent device requests
-});
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
-// --- 2. WEB INTERFACE (Health Checks) ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('BizTrack HEMIPAY Relay: Online 🚀'));
-app.listen(PORT, '0.0.0.0', () => console.log(`📡 Web Gateway active on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`📡 HEMIPAY Relay: Active 🚀`));
 
-// --- 3. PROTOCOL UTILITIES (Per V1.1 Specs) ---
-/**
- * Generates a unique message_id. 
- * Required: Each command must have a different ID or device ignores it.
- */
-const generateMsgId = () => Math.floor(Math.random() * 10000000000).toString();
+const getMsgId = () => Math.floor(Math.random() * 10000000000).toString();
+const getTimestamp = () => Math.floor(Date.now() / 1000).toString();
 
-/**
- * Generates Unix standard timestamp.
- * Required: Accurate to seconds only[cite: 29, 96].
- */
-const getUnixTimestamp = () => Math.floor(Date.now() / 1000).toString();
-
-// --- 4. MQTT CONNECTION (With Oracle Auth) ---
 const client = mqtt.connect("mqtt://127.0.0.1:1883", {
   clientId: 'BIZTRACK_MASTER_RELAY',
   username: 'aayush',
   password: 'Ankit#2059',
-  clean: false // Maintain session persistence
+  clean: false
 });
 
 client.on('connect', () => {
-  // SERVER LISTENS to /LLZN/{SN} as per manufacturer default publish topic
   client.subscribe('/LLZN/+', { qos: 1 });
-  console.log("✅ Authenticated & Listening for HEMIPAY requests on /LLZN/+");
+  console.log("✅ Server authenticated. Listening for hardware on /LLZN/+");
 });
 
 client.on('message', async (topic, message) => {
-  const serialNumber = topic.split('/')[2]; // Extracts SN from /LLZN/2602270002
+  // --- 1. ROBUST TOPIC PARSING ---
+  // If topic is "/LLZN/2602270002", this filters out empty parts and finds the SN
+  const topicParts = topic.split('/').filter(p => p && p !== 'LLZN');
+  const serialNumber = topicParts[0]; 
+
+  // --- 2. DEBUG PAYLOAD ---
   let payload;
-  
   try {
     payload = JSON.parse(message.toString());
-  } catch (e) { return; }
+    console.log(`--- RAW DATA FROM ${serialNumber} ---`);
+    console.log(payload); // This will show us the real keys (amount? money? amt?)
+  } catch (e) { 
+    console.error("❌ Received non-JSON message");
+    return; 
+  }
 
-  console.log(`[REQ] Device ${serialNumber} requesting QR for NPR ${payload.amount}`);
+  // Handle case where "amount" might be nested or named differently
+  const amount = payload.amount || payload.pay_amount || payload.money;
+
+  if (!serialNumber || !amount) {
+    console.error(`⚠️ Missing data. SN: ${serialNumber}, Amount: ${amount}`);
+    return;
+  }
+
+  console.log(`[REQ] ${serialNumber} requesting QR for NPR ${amount}`);
 
   try {
-    // Validate device and fetch Static QR from Supabase
     const device = await prisma.device.findUnique({
       where: { serialNumber: serialNumber },
       include: { user: true }
     });
 
-    if (!device || !device.fonepayMerchantCode) {
-      console.error(`❌ Authorization Failed: Device ${serialNumber} not in DB.`);
+    if (!device) {
+      console.error(`❌ Device ${serialNumber} not found in database.`);
       return;
     }
 
-    // Generate a unique Order ID for this transaction [cite: 178, 207]
-    const currentOrderId = `ORD-${Date.now()}`;
+    const orderId = `ORD-${Date.now()}`;
 
-    // --- STEP 1: PUSH DYNAMIC QR (wait_payment) ---
-    // Target topic: {SN}/pubmsg (where device subscribes)
+    // --- STEP 1: PUSH QR (Wait Payment) ---
     const waitPaymentPacket = {
-      "message_id": generateMsgId(), // [cite: 172]
-      "time_stamp": getUnixTimestamp(), // [cite: 173]
-      "device_sn": serialNumber, // [cite: 174]
-      "packet_type": "wait_payment", // [cite: 175]
+      "message_id": getMsgId(), // [cite: 27, 94]
+      "time_stamp": getTimestamp(), // [cite: 29, 96]
+      "device_sn": serialNumber, // [cite: 30, 97]
+      "packet_type": "wait_payment", // [cite: 175, 204]
       "content": {
-        "amount_due": parseFloat(payload.amount), // [cite: 177, 206]
-        "order_id": currentOrderId, // [cite: 178]
-        "payment_timeout": 60, // Returns home after 60s [cite: 179, 208]
+        "amount_due": parseFloat(amount), // [cite: 177, 206]
+        "order_id": orderId, // [cite: 178, 207]
+        "payment_timeout": 60, // [cite: 179, 208]
         "screen_content_config": {
           "wait_payment_screen_qrcode_1_config": {
             "txt": device.fonepayMerchantCode, // [cite: 186, 212]
-            "hei": 210 // Max height [cite: 189, 213]
+            "hei": 210 // [cite: 189, 213]
           },
           "wait_payment_screen_label_3_config": {
-            "txt": `${payload.amount} NPR`, // [cite: 191, 229]
-            "hei": 24, // Medium font [cite: 193, 232]
-            "col": "FF0000" // Red text [cite: 194, 222]
+            "txt": `${amount} NPR`, // [cite: 191, 229]
+            "hei": 24, // Medium font [cite: 232]
+            "col": "FF0000" // Red [cite: 245]
           }
         }
       }
     };
 
     client.publish(`${serialNumber}/pubmsg`, JSON.stringify(waitPaymentPacket));
-    console.log(`[QR_SENT] Wait Payment screen pushed to ${serialNumber}`);
+    console.log(`[QR_SENT] Pushed to ${serialNumber}/pubmsg`);
 
-    // --- STEP 2: SIMULATE SMS SUCCESS (After 4s) ---
+    // --- STEP 2: SIMULATED SUCCESS (4s) ---
     setTimeout(async () => {
-      console.log(`🔔 Simulating SMS Confirmation for ${serialNumber}...`);
+      console.log(`🔔 Simulating success for ${serialNumber}...`);
 
-      // 1. Record transaction in Supabase EarningRecord table
-      await prisma.earningRecord.create({
-        data: {
-          amount: parseFloat(payload.amount),
-          prn: currentOrderId,
-          userId: device.userId,
-          deviceId: device.id,
-          description: `Payment at ${device.user.businessName}`
-        }
-      });
-
-      // 2. Send Payment Success Packet
       const paymentPacket = {
-        "message_id": generateMsgId(), // [cite: 256]
-        "time_stamp": getUnixTimestamp(), // [cite: 257]
-        "device_sn": serialNumber, // [cite: 258]
-        "packet_type": "payment", // [cite: 259]
+        "message_id": getMsgId(), // [cite: 18, 256]
+        "time_stamp": getTimestamp(), // [cite: 19, 257]
+        "device_sn": serialNumber, // [cite: 20, 258]
+        "packet_type": "payment", // [cite: 21, 259]
         "content": {
-          "play_payment_amount": parseFloat(payload.amount), // [cite: 261, 267]
-          "order_id": currentOrderId // CRITICAL: Must match wait_payment [cite: 262, 268]
+          "play_payment_amount": parseFloat(amount), // [cite: 23, 261]
+          "order_id": orderId // Must match wait_payment [cite: 262, 268]
         }
       };
 
       client.publish(`${serialNumber}/pubmsg`, JSON.stringify(paymentPacket));
-      console.log(`[PAID] Success announcement sent to ${serialNumber}`);
     }, 4000);
 
   } catch (err) {
-    console.error(`Relay Error for ${serialNumber}:`, err.message);
+    console.error(`Relay Error:`, err.message);
   }
 });
-
-client.on('error', (err) => console.error("❌ MQTT Client Error:", err));

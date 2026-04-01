@@ -25,28 +25,20 @@ client.on('connect', () => {
 });
 
 client.on('message', async (topic, message) => {
-  const parts = topic.split('/').filter(p => p && p !== 'LLZN');
-  const serialNumber = parts[0]; 
-
+  const serialNumber = topic.split('/').filter(p => p && p !== 'LLZN')[0];
+  
   let payload;
   try {
     payload = JSON.parse(message.toString());
   } catch (e) { return; }
 
-  // --- THE LOOP FIX: FILTER BY PACKET TYPE ---
-  // The device sends responses (like 'rsp_set_device_info') [cite: 142]
-  // We ONLY want to react to 'request_payment'
-  if (payload.packet_type !== 'request_payment') {
-    console.log(`[IGNORE] Received ${payload.packet_type} from ${serialNumber}`);
-    return; 
-  }
+  // Only process the actual payment request
+  if (payload.packet_type !== 'request_payment') return;
 
+  const deviceMsgId = payload.message_id; // Capture the device's message ID
   const amount = payload.content ? payload.content.amount_due : null;
 
-  if (!serialNumber || amount === null) {
-    console.error(`⚠️ Request from ${serialNumber} is missing amount data.`);
-    return;
-  }
+  if (!serialNumber || amount === null) return;
 
   console.log(`[REQ] ${serialNumber} requesting QR for NPR ${amount}`);
 
@@ -56,58 +48,70 @@ client.on('message', async (topic, message) => {
       include: { user: true }
     });
 
-    if (!device) {
-      console.error(`❌ Device ${serialNumber} not found in database.`);
-      return;
-    }
+    if (!device) return;
 
-    const orderId = `ORD-${Date.now()}`;
+    const currentOrderId = `BIZ${Date.now()}`;
 
-    // --- STEP 1: PUSH QR (wait_payment) [cite: 175] ---
+    // --- STEP 1: SEND ACKNOWLEDGMENT (Clear "Connecting" Spinner) ---
+    // We reply to the device using ITS OWN message_id to confirm receipt
+    const ackPacket = {
+      "message_id": deviceMsgId, 
+      "time_stamp": getTimestamp(),
+      "device_sn": serialNumber,
+      "packet_type": "rsp_request_payment", // Common protocol response type
+      "content": { "response_status": "success" }
+    };
+    client.publish(`${serialNumber}/pubmsg`, JSON.stringify(ackPacket));
+
+    // --- STEP 2: PUSH QR (wait_payment) ---
     const waitPaymentPacket = {
-      "message_id": getMsgId(), // Required [cite: 201]
-      "time_stamp": getTimestamp(), // Required [cite: 202]
-      "device_sn": serialNumber, // Required [cite: 203]
-      "packet_type": "wait_payment", // Required [cite: 204]
+      "message_id": getMsgId(), // NEW unique ID for this command [cite: 27]
+      "time_stamp": getTimestamp(),
+      "device_sn": serialNumber,
+      "packet_type": "wait_payment", 
       "content": {
-        "amount_due": parseFloat(amount), // [cite: 206]
-        "order_id": orderId, // [cite: 207]
-        "payment_timeout": 60, // [cite: 208]
+        "amount_due": parseFloat(amount), 
+        "order_id": currentOrderId, 
+        "payment_timeout": 60, 
         "screen_content_config": {
           "wait_payment_screen_qrcode_1_config": {
-            "txt": device.fonepayMerchantCode, // [cite: 212]
-            "hei": 210 // Max height [cite: 213]
+            "txt": device.fonepayMerchantCode, 
+            "hei": 210 // Max height [cite: 189, 213]
           },
           "wait_payment_screen_label_3_config": {
-            "txt": `${amount} NPR`, // [cite: 229]
+            "txt": `${amount} NPR`,
             "hei": 24, // Medium font [cite: 232]
-            "col": "FF0000" // Red [cite: 222]
+            "col": "FF0000" // Red [cite: 194, 222]
           }
         }
       }
     };
 
-    client.publish(`${serialNumber}/pubmsg`, JSON.stringify(waitPaymentPacket));
-    console.log(`[QR_SENT] Pushed wait_payment to ${serialNumber}/pubmsg`);
+    // Small delay to ensure ACK is processed first
+    setTimeout(() => {
+      client.publish(`${serialNumber}/pubmsg`, JSON.stringify(waitPaymentPacket));
+      console.log(`[QR_SENT] Pushed wait_payment to ${serialNumber}`);
+    }, 200);
 
-    // --- STEP 2: SIMULATE SUCCESS (4s) ---
-    setTimeout(async () => {
+    // --- STEP 3: SUCCESS ANNOUNCEMENT (4s) ---
+    setTimeout(() => {
       const paymentPacket = {
-        "message_id": getMsgId(), // [cite: 201]
-        "time_stamp": getTimestamp(), // [cite: 202]
-        "device_sn": serialNumber, // [cite: 203]
-        "packet_type": "payment", // [cite: 266]
+        "message_id": getMsgId(), // NEW unique ID [cite: 94]
+        "time_stamp": getTimestamp(),
+        "device_sn": serialNumber,
+        "packet_type": "payment", 
         "content": {
-          "play_payment_amount": parseFloat(amount), // [cite: 267]
-          "order_id": orderId // MUST match wait_payment [cite: 268]
+          "play_payment_amount": parseFloat(amount), 
+          "order_id": currentOrderId // MUST match Step 2 [cite: 268]
         }
       };
 
       client.publish(`${serialNumber}/pubmsg`, JSON.stringify(paymentPacket));
-      console.log(`[PAID] Success announcement sent to ${serialNumber}`);
+      console.log(`[PAID] Success sent to ${serialNumber}`);
     }, 4000);
 
   } catch (err) {
-    console.error(`Relay Error for ${serialNumber}:`, err.message);
+    console.error(`Relay Error:`, err.message);
   }
 });
+  

@@ -1,3 +1,29 @@
+require('dotenv').config();
+const mqtt = require('mqtt');
+const { PrismaClient } = require('@prisma/client');
+const { PrismaPg } = require('@prisma/adapter-pg');
+const { Pool } = require('pg');
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
+
+// Protocol Helpers
+const getMsgId = () => Math.floor(Math.random() * 10000000000).toString(); // [cite: 27, 200]
+const getTimestamp = () => Math.floor(Date.now() / 1000).toString(); // [cite: 29, 202]
+
+const client = mqtt.connect("mqtt://127.0.0.1:1883", {
+  clientId: 'BIZTRACK_MASTER_RELAY',
+  username: 'aayush',
+  password: 'Ankit#2059',
+  clean: false
+});
+
+client.on('connect', () => {
+  client.subscribe('/LLZN/+', { qos: 1 });
+  console.log("✅ Server authenticated. Monitoring /LLZN/+");
+});
+
 // --- UPDATED MESSAGE HANDLER ---
 client.on('message', async (topic, message) => {
   const serialNumber = topic.split('/').filter(p => p && p !== 'LLZN')[0];

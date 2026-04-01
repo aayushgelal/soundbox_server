@@ -15,24 +15,24 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => console.log(`📡 HEMIPAY Gateway active on port ${PORT}`));
 
 // --- 2. HELPER FUNCTIONS ---
-// Generates unique message_id as required by the protocol [cite: 5, 39, 67]
 const getMsgId = () => Math.floor(Math.random() * 10000000000).toString();
-// Generates current Unix timestamp in seconds 
 const getTimestamp = () => Math.floor(Date.now() / 1000).toString();
 
-// --- 3. MQTT LOGIC ---
+// --- 3. MQTT LOGIC WITH AUTHENTICATION ---
 const client = mqtt.connect("mqtt://127.0.0.1:1883", {
-  clientId: 'BIZTRACK_MASTER_RELAY'
+  clientId: 'BIZTRACK_MASTER_RELAY',
+  username: 'aayush',       // Added
+  password: 'Ankit#2059',   // Added
+  clean: false
 });
 
 client.on('connect', () => {
-  // Subscribing to dynamic device messages [User Protocol Info]
+  // Subscribe to device messages (SN/pubmsg)
   client.subscribe('+/pubmsg', { qos: 1 });
-  console.log("🚀 HEMIPAY Relay Connected. Monitoring +/pubmsg...");
+  console.log("✅ HEMIPAY Relay Connected with Auth. Monitoring +/pubmsg...");
 });
 
 client.on('message', async (topic, message) => {
-  // Extract Serial Number from Topic (SN/pubmsg) [User Protocol Info]
   const serialNumber = topic.split('/')[0];
   let payload;
   
@@ -43,7 +43,6 @@ client.on('message', async (topic, message) => {
   console.log(`[REQ] ${serialNumber} requesting NPR ${payload.amount}`);
 
   try {
-    // Database lookup for static QR code
     const device = await prisma.device.findUnique({
       where: { serialNumber: serialNumber },
       include: { user: true }
@@ -54,9 +53,9 @@ client.on('message', async (topic, message) => {
       return;
     }
 
-    const orderId = `ORD-${Date.now()}`; // Unique transaction ID [cite: 43, 64]
+    const orderId = `ORD-${Date.now()}`;
 
-    // --- STEP 1: PUSH DYNAMIC QR SCREEN  ---
+    // --- STEP 1: PUSH DYNAMIC QR SCREEN ---
     const waitPaymentPacket = {
       "message_id": getMsgId(),
       "time_stamp": getTimestamp(),
@@ -65,29 +64,28 @@ client.on('message', async (topic, message) => {
       "content": {
         "amount_due": parseFloat(payload.amount),
         "order_id": orderId,
-        "payment_timeout": 60, // Returns to home after 60s 
+        "payment_timeout": 60,
         "screen_content_config": {
           "wait_payment_screen_qrcode_1_config": {
-            "txt": device.fonepayMerchantCode, // QR data [cite: 46]
-            "hei": 210 // Max height [cite: 47]
+            "txt": device.fonepayMerchantCode,
+            "hei": 210 
           },
           "wait_payment_screen_label_3_config": {
             "txt": `${payload.amount} NPR`,
-            "hei": 24, // Medium font [cite: 54]
-            "col": "FF0000" // Red text [cite: 52]
+            "hei": 24,
+            "col": "FF0000"
           }
         }
       }
     };
 
     client.publish(`/LLZN/${serialNumber}`, JSON.stringify(waitPaymentPacket));
-    console.log(`[QR_SENT] Pushed wait_payment screen to ${serialNumber}`);
+    console.log(`[QR_SENT] Pushed to /LLZN/${serialNumber}`);
 
     // --- STEP 2: SIMULATE PAYMENT SUCCESS AFTER 4s ---
     setTimeout(async () => {
       console.log(`🔔 Simulating success for ${serialNumber}...`);
 
-      // Record in Supabase
       await prisma.earningRecord.create({
         data: {
           amount: parseFloat(payload.amount),
@@ -98,7 +96,6 @@ client.on('message', async (topic, message) => {
         }
       });
 
-      // Send payment announcement and trigger audio [cite: 2, 4, 62]
       const paymentPacket = {
         "message_id": getMsgId(),
         "time_stamp": getTimestamp(),
@@ -106,15 +103,19 @@ client.on('message', async (topic, message) => {
         "packet_type": "payment",
         "content": {
           "play_payment_amount": parseFloat(payload.amount),
-          "order_id": orderId // Must match original order_id to clear screen 
+          "order_id": orderId 
         }
       };
 
       client.publish(`/LLZN/${serialNumber}`, JSON.stringify(paymentPacket));
-      console.log(`[PAID] Success command sent to ${serialNumber}`);
+      console.log(`[PAID] Success command sent to /LLZN/${serialNumber}`);
     }, 4000);
 
   } catch (err) {
-    console.error(`Relay Error for ${serialNumber}:`, err.message);
+    console.error(`Relay Error:`, err.message);
   }
+});
+
+client.on('error', (err) => {
+  console.error("❌ MQTT Connection Error:", err);
 });

@@ -12,7 +12,7 @@ const getMsgId = () => Math.floor(Math.random() * 10000000000).toString();
 const getTimestamp = () => Math.floor(Date.now() / 1000).toString();
 
 // Device publishes to:  {SN}/pubmsg
-// Device subscribes to: /LLZN/{SN}   ← confirmed from mosquitto logs
+// Device subscribes to: /LLZN/{SN}
 const toDevice = (sn) => `/LLZN/${sn}`;
 
 const client = mqtt.connect("mqtt://127.0.0.1:1883", {
@@ -40,7 +40,7 @@ function pushHomeScreen(serialNumber, device) {
         main_screen_label_1_config: { txt: "Scan to Pay", hei: 24 },
         main_screen_qrcode_1_config: {
           txt: device.fonepayMerchantCode,
-          hei: 210,
+          hei: 180,        // reduced from 210
           col: "000000"
         },
         main_screen_label_3_config: {
@@ -69,7 +69,7 @@ function pushWaitPayment(serialNumber, device, amount) {
       screen_content_config: {
         wait_payment_screen_qrcode_1_config: {
           txt: device.fonepayMerchantCode,
-          x: 1, y: 1, hei: 210
+          x: 1, y: 1, hei: 180   // reduced from 210
         },
         wait_payment_screen_label_3_config: {
           txt: `${amount} NPR`,

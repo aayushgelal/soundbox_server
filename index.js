@@ -8,7 +8,6 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
-// --- PROTOCOL HELPERS ---
 const getMsgId = () => Math.floor(Math.random() * 10000000000).toString();
 const getTimestamp = () => Math.floor(Date.now() / 1000).toString();
 
@@ -19,7 +18,6 @@ const client = mqtt.connect("mqtt://127.0.0.1:1883", {
   clean: false
 });
 
-// Push static QR home screen to a device (Protocol Doc Section 4)
 async function pushStaticHomeScreen(serialNumber) {
   const device = await prisma.device.findUnique({
     where: { serialNumber },
@@ -31,7 +29,7 @@ async function pushStaticHomeScreen(serialNumber) {
     return;
   }
 
-  const setDeviceInfoPacket = {
+  const packet = {
     message_id: getMsgId(),
     time_stamp: getTimestamp(),
     device_sn: serialNumber,
@@ -59,9 +57,8 @@ async function pushStaticHomeScreen(serialNumber) {
     }
   };
 
-  const pubTopic = `${serialNumber}/submsg`;
-  client.publish(pubTopic, JSON.stringify(setDeviceInfoPacket), { qos: 1 });
-  console.log(`📤 ${pubTopic} set_device_info → static QR pushed`);
+  client.publish(`${serialNumber}/submsg`, JSON.stringify(packet), { qos: 1 });
+  console.log(`📤 ${serialNumber}/submsg set_device_info → static QR pushed`);
 }
 
 client.on('connect', () => {
@@ -73,10 +70,51 @@ client.on('message', async (topic, message) => {
   try {
     const serialNumber = topic.split('/')[0];
     const payload = JSON.parse(message.toString());
-    console.log(`📥 ${serialNumber} ${payload.packet_type}`);
+    const packetType = payload.packet_type;
+    const reRequestId = payload.re_request_id;
 
-    // For static QR mode: whenever the device sends ANY packet (boot, request_payment, etc.)
-    // just push the static home screen back. This clears "Connecting..." and shows the QR.
+    console.log(`📥 ${serialNumber} packet_type=${packetType ?? 'heartbeat'} re_request_id=${reRequestId ?? 'none'}`);
+
+    // --- HEARTBEAT / BOOT PACKET ---
+    // Device sends status info on connect with re_request_id instead of packet_type.
+    // Must acknowledge with re_request_id echoed back, THEN push screen.
+    if (reRequestId && !packetType) {
+      const ack = {
+        re_request_id: reRequestId,   // echo back exactly
+        message_id: getMsgId(),
+        time_stamp: getTimestamp(),
+        device_sn: serialNumber,
+        packet_type: "rsp_heartbeat",
+        content: { response_status: "success" }
+      };
+      client.publish(`${serialNumber}/submsg`, JSON.stringify(ack), { qos: 1 });
+      console.log(`📤 ${serialNumber}/submsg rsp_heartbeat (ack re_request_id)`);
+
+      // Small delay to let device finish handshake before we push the screen
+      setTimeout(() => pushStaticHomeScreen(serialNumber), 500);
+      return;
+    }
+
+    // --- REQUEST_PAYMENT ---
+    // Device user entered an amount. For static QR mode, just reset the screen.
+    if (packetType === 'request_payment') {
+      const ack = {
+        message_id: payload.message_id,
+        time_stamp: getTimestamp(),
+        device_sn: serialNumber,
+        packet_type: "rsp_request_payment",
+        content: { response_status: "success" }
+      };
+      client.publish(`${serialNumber}/submsg`, JSON.stringify(ack), { qos: 1 });
+      console.log(`📤 ${serialNumber}/submsg rsp_request_payment`);
+
+      setTimeout(() => pushStaticHomeScreen(serialNumber), 200);
+      return;
+    }
+
+    // --- ANY OTHER PACKET ---
+    // Unknown packet type — just push the screen anyway
+    console.log(`⚠️  Unhandled packet_type="${packetType}", pushing screen anyway`);
     await pushStaticHomeScreen(serialNumber);
 
   } catch (err) {

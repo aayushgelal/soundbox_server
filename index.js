@@ -18,17 +18,16 @@ const client = mqtt.connect("mqtt://127.0.0.1:1883", {
   clean: false
 });
 
-async function pushStaticHomeScreen(serialNumber) {
-  const device = await prisma.device.findUnique({
+async function getDevice(serialNumber) {
+  return prisma.device.findUnique({
     where: { serialNumber },
     include: { user: true }
   });
+}
 
-  if (!device) {
-    console.warn(`⚠️  Device ${serialNumber} not found in DB`);
-    return;
-  }
-
+// ─── Section 4: Update home screen with static QR ─────────────────────────
+// Called on boot/heartbeat so idle screen always shows the QR.
+function pushHomeScreen(serialNumber, device) {
   const packet = {
     message_id: getMsgId(),
     time_stamp: getTimestamp(),
@@ -56,9 +55,42 @@ async function pushStaticHomeScreen(serialNumber) {
       }
     }
   };
-
   client.publish(`${serialNumber}/submsg`, JSON.stringify(packet), { qos: 1 });
-  console.log(`📤 ${serialNumber}/submsg set_device_info → static QR pushed`);
+  console.log(`📤 ${serialNumber} set_device_info → home screen QR`);
+}
+
+// ─── Section 5 Step 1: wait_payment ───────────────────────────────────────
+// After request_payment, device REQUIRES wait_payment to leave "Connecting..." screen.
+// We show the static Fonepay QR here too — amount is what the merchant entered.
+function pushWaitPayment(serialNumber, device, amount) {
+  const orderId = Date.now().toString();
+  const packet = {
+    message_id: getMsgId(),
+    time_stamp: getTimestamp(),
+    device_sn: serialNumber,
+    packet_type: "wait_payment",
+    content: {
+      amount_due: parseFloat(amount),
+      order_id: orderId,
+      payment_timeout: 60,           // return home after 60s if no payment packet
+      screen_content_config: {
+        wait_payment_screen_qrcode_1_config: {
+          txt: device.fonepayMerchantCode,
+          x: 1,
+          y: 1,
+          hei: 210
+        },
+        wait_payment_screen_label_3_config: {
+          txt: `${amount} NPR`,
+          x: 1,
+          hei: 24,
+          col: "FF0000"
+        }
+      }
+    }
+  };
+  client.publish(`${serialNumber}/submsg`, JSON.stringify(packet), { qos: 1 });
+  console.log(`📤 ${serialNumber} wait_payment → static QR, amount=${amount}`);
 }
 
 client.on('connect', () => {
@@ -70,17 +102,17 @@ client.on('message', async (topic, message) => {
   try {
     const serialNumber = topic.split('/')[0];
     const payload = JSON.parse(message.toString());
-    const packetType = payload.packet_type;
-    const reRequestId = payload.re_request_id;
+    const packetType = payload.packet_type;   // may be undefined for heartbeat/shutdown
+    const reRequestId = payload.re_request_id; // only present in heartbeat
 
-    console.log(`📥 ${serialNumber} packet_type=${packetType ?? 'heartbeat'} re_request_id=${reRequestId ?? 'none'}`);
+    console.log(`📥 ${serialNumber} | packet_type="${packetType}" | re_request_id="${reRequestId}"`);
 
-    // --- HEARTBEAT / BOOT PACKET ---
-    // Device sends status info on connect with re_request_id instead of packet_type.
-    // Must acknowledge with re_request_id echoed back, THEN push screen.
-    if (reRequestId && !packetType) {
+    // ── 1. HEARTBEAT (device boot/reconnect) ─────────────────────────────
+    // Identified by presence of re_request_id. Must echo it back exactly.
+    // Then push home screen so QR appears immediately after "server connected".
+    if (reRequestId) {
       const ack = {
-        re_request_id: reRequestId,   // echo back exactly
+        re_request_id: reRequestId,  // echo exactly as received
         message_id: getMsgId(),
         time_stamp: getTimestamp(),
         device_sn: serialNumber,
@@ -88,36 +120,63 @@ client.on('message', async (topic, message) => {
         content: { response_status: "success" }
       };
       client.publish(`${serialNumber}/submsg`, JSON.stringify(ack), { qos: 1 });
-      console.log(`📤 ${serialNumber}/submsg rsp_heartbeat (ack re_request_id)`);
+      console.log(`📤 ${serialNumber} rsp_heartbeat`);
 
-      // Small delay to let device finish handshake before we push the screen
-      setTimeout(() => pushStaticHomeScreen(serialNumber), 500);
+      // Small delay — let device finish its own boot handshake before we push screen
+      const device = await getDevice(serialNumber);
+      if (device) {
+        setTimeout(() => pushHomeScreen(serialNumber, device), 800);
+      } else {
+        console.warn(`⚠️  Device ${serialNumber} not in DB`);
+      }
       return;
     }
 
-    // --- REQUEST_PAYMENT ---
-    // Device user entered an amount. For static QR mode, just reset the screen.
+    // ── 2. SHUTDOWN ───────────────────────────────────────────────────────
+    // Device going offline — nothing to do.
+    if (payload.shutdown) {
+      console.log(`📴 ${serialNumber} shutdown, ignoring`);
+      return;
+    }
+
+    // ── 3. REQUEST_PAYMENT ───────────────────────────────────────────────
+    // Merchant entered an amount on the device keypad.
+    // Protocol (Section 5): MUST respond rsp_request_payment THEN wait_payment.
+    // set_device_info alone will NOT clear the "Connecting..." screen.
     if (packetType === 'request_payment') {
+      const amount = payload.content?.amount_due;
+
+      // Step A: acknowledge (clears spinner)
       const ack = {
-        message_id: payload.message_id,
+        message_id: payload.message_id,   // echo device's message_id
         time_stamp: getTimestamp(),
         device_sn: serialNumber,
         packet_type: "rsp_request_payment",
         content: { response_status: "success" }
       };
       client.publish(`${serialNumber}/submsg`, JSON.stringify(ack), { qos: 1 });
-      console.log(`📤 ${serialNumber}/submsg rsp_request_payment`);
+      console.log(`📤 ${serialNumber} rsp_request_payment`);
 
-      setTimeout(() => pushStaticHomeScreen(serialNumber), 200);
+      // Step B: push wait_payment with static QR (shows QR on screen)
+      const device = await getDevice(serialNumber);
+      if (device) {
+        setTimeout(() => pushWaitPayment(serialNumber, device, amount), 300);
+      } else {
+        console.warn(`⚠️  Device ${serialNumber} not in DB`);
+      }
       return;
     }
 
-    // --- ANY OTHER PACKET ---
-    // Unknown packet type — just push the screen anyway
-    console.log(`⚠️  Unhandled packet_type="${packetType}", pushing screen anyway`);
-    await pushStaticHomeScreen(serialNumber);
+    // ── 4. rsp_set_device_info / rsp_heartbeat (device ACKs) ─────────────
+    // Device confirming it received our commands — no action needed.
+    if (packetType && packetType.startsWith('rsp_')) {
+      console.log(`✅ ${serialNumber} device ack: ${packetType}`);
+      return;
+    }
+
+    console.log(`⚠️  ${serialNumber} unhandled packet_type="${packetType}", ignoring`);
 
   } catch (err) {
-    console.error("🔥 Relay Error:", err.message);
+    console.error("🔥 Relay Error:", err.message, err.stack);
   }
 });

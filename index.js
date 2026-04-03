@@ -30,22 +30,25 @@ async function getDevice(serialNumber) {
 /**
  * NEW FUNCTION: Stores the earning record in the database
  */
+/**
+ * UPDATED: Stores the earning record without device SN in description
+ */
 async function recordTransaction(serialNumber, device, amount, orderId) {
   try {
     await prisma.earningRecord.create({
       data: {
         amount: parseFloat(amount),
         currency: "NPR",
-        description: `QR Payment received on device ${serialNumber}`,
+        description: "QR Payment received", // Removed device SN reference
         category: "Sales",
         status: "SUCCESS",
-        prn: orderId, // Using the unique Order ID as the Fonepay PRN
+        prn: orderId, 
         source: "device",
         userId: device.userId,
         deviceId: device.id
       }
     });
-    console.log(`💾 Transaction Saved: PRN=${orderId} | Amount=${amount} | Device=${serialNumber}`);
+    console.log(`💾 Transaction Saved: PRN=${orderId} | Amount=${amount}`);
   } catch (err) {
     console.error("🔥 Database Save Error:", err.message);
   }

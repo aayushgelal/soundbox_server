@@ -27,6 +27,30 @@ async function getDevice(serialNumber) {
   });
 }
 
+/**
+ * NEW FUNCTION: Stores the earning record in the database
+ */
+async function recordTransaction(serialNumber, device, amount, orderId) {
+  try {
+    await prisma.earningRecord.create({
+      data: {
+        amount: parseFloat(amount),
+        currency: "NPR",
+        description: `QR Payment received on device ${serialNumber}`,
+        category: "Sales",
+        status: "SUCCESS",
+        prn: orderId, // Using the unique Order ID as the Fonepay PRN
+        source: "device",
+        userId: device.userId,
+        deviceId: device.id
+      }
+    });
+    console.log(`💾 Transaction Saved: PRN=${orderId} | Amount=${amount} | Device=${serialNumber}`);
+  } catch (err) {
+    console.error("🔥 Database Save Error:", err.message);
+  }
+}
+
 function pushHomeScreen(serialNumber, device) {
   const packet = {
     message_id: getMsgId(),
@@ -81,8 +105,8 @@ function pushWaitPayment(serialNumber, device, amount) {
   client.publish(toDevice(serialNumber), JSON.stringify(waitPacket), { qos: 1 });
   console.log(`📤 ${toDevice(serialNumber)} wait_payment → amount=${amount}`);
 
-  // Step 2: after 5 seconds, announce payment received
-  setTimeout(() => {
+  // Step 2: after 5 seconds, announce payment received and store in DB
+  setTimeout(async () => {
     const paymentPacket = {
       message_id: getMsgId(),
       time_stamp: getTimestamp(),
@@ -95,6 +119,10 @@ function pushWaitPayment(serialNumber, device, amount) {
     };
     client.publish(toDevice(serialNumber), JSON.stringify(paymentPacket), { qos: 1 });
     console.log(`📤 ${toDevice(serialNumber)} payment → announcing ${amount} NPR`);
+
+    // Call the new record function
+    await recordTransaction(serialNumber, device, amount, orderId);
+    
   }, 5000);
 }
 

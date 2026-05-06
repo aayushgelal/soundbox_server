@@ -140,8 +140,9 @@ client.on('message', async (topic, message) => {
     const payload = JSON.parse(message.toString());
     const packetType = payload.packet_type;
     const reRequestId = payload.re_request_id;
+  
 
-    console.log(`📥 ${serialNumber} | packet_type="${packetType}" | re_request_id="${reRequestId}"`);
+    console.log(`📥 ${serialNumber}  payload ${payload} packet_type="${packetType}" | re_request_id="${reRequestId}"`);
 
     // ── 1. HEARTBEAT ─────────────────────────────────────────────────────
     if (reRequestId) {

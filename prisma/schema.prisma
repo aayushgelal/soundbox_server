@@ -1,5 +1,3 @@
-// This is your updated Prisma schema for the Soundbox POS system
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -9,93 +7,147 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  username     String   @unique
-  password     String
-  businessName String
-  email        String?
-  phone        String?
-  role         String   @default("MERCHANT") // MERCHANT | ADMIN
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  // Relationships
+  id            String          @id @default(cuid())
+  username      String          @unique
+  password      String
+  businessName  String
+  email         String?
+  phone         String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  role          String          @default("MERCHANT")
+  parentId      String?
+  Credit        Credit[]
   devices       Device[]
   records       EarningRecord[]
+  InventoryItem InventoryItem[]
+  StockMovement StockMovement[]
   subscriptions Subscription[]
+  User          User?           @relation("UserToUser", fields: [parentId], references: [id])
+  other_User    User[]          @relation("UserToUser")
 }
 
 model Device {
-  id           String   @id @default(cuid())
-  name         String
-  serialNumber String   @unique
-  location     String?
-  type         String   @default("ET389") // Specifically for your MoreFun model
-  isActive     Boolean  @default(true)
-  
-  // Fonepay Gateway Credentials (Specific to each hardware/store)
+  id                  String          @id @default(cuid())
+  name                String
+  serialNumber        String          @unique
+  location            String?
+  type                String          @default("ET389")
+  isActive            Boolean         @default(true)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  userId              String
   fonepayMerchantCode String?
-  fonepayUsername     String?
   fonepayPassword     String?
-  fonepaySecretKey    String?  // Encrypt this before saving in a real app
-
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  records      EarningRecord[]
-  subscription Subscription?
+  fonepaySecretKey    String?
+  fonepayUsername     String?
+  user                User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  records             EarningRecord[]
+  subscription        Subscription?
 }
 
 model EarningRecord {
-  id          String   @id @default(cuid())
-  amount      Float    // Always stored in the smallest unit or as decimal
-  currency    String   @default("NPR")
-  description String?
-  category    String   @default("Sales")
-  status      String   @default("SUCCESS") // SUCCESS | FAILED | PENDING
-  prn         String   @unique             // Fonepay's unique transaction reference
-  source      String   @default("device")  // device | manual
-  recordedAt  DateTime @default(now())
-  createdAt   DateTime @default(now())
-
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deviceId    String?
-  device      Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  id              String   @id @default(cuid())
+  amount          Float
+  description     String?
+  category        String   @default("Sales")
+  source          String   @default("device")
+  recordedAt      DateTime @default(now())
+  createdAt       DateTime @default(now())
+  userId          String
+  deviceId        String?
+  currency        String   @default("NPR")
+  prn             String?  @unique
+  status          String   @default("SUCCESS")
+  creditId        String?
+  paymentMethod   String   @default("HARDWARE")
+  creditDirection String?
+  Credit          Credit?  @relation(fields: [creditId], references: [id])
+  device          Device?  @relation(fields: [deviceId], references: [id])
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Subscription {
-  id           String    @id @default(cuid())
-  plan         String    @default("monthly") // monthly | yearly
-  amount       Float
-  currency     String    @default("NPR")
-  status       String    @default("active")  // active | expired | pending
-  startDate    DateTime  @default(now())
-  endDate      DateTime
-  autoRenew    Boolean   @default(true)
-  lastPaidAt   DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-
-  userId       String
-  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deviceId     String    @unique
-  device       Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-
-  payments     SubscriptionPayment[]
+  id         String                @id @default(cuid())
+  plan       String                @default("monthly")
+  amount     Float
+  currency   String                @default("NPR")
+  status     String                @default("active")
+  startDate  DateTime              @default(now())
+  endDate    DateTime
+  autoRenew  Boolean               @default(true)
+  lastPaidAt DateTime?
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
+  userId     String
+  deviceId   String                @unique
+  device     Device                @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments   SubscriptionPayment[]
 }
 
 model SubscriptionPayment {
-  id             String   @id @default(cuid())
+  id             String       @id @default(cuid())
   amount         Float
-  currency       String   @default("NPR")
-  status         String   @default("completed")
-  paymentMethod  String   @default("fonepay") // Defaulting to your primary gateway
-  transactionRef String?  @unique
-  paidAt         DateTime @default(now())
-
+  currency       String       @default("NPR")
+  status         String       @default("completed")
+  paymentMethod  String       @default("fonepay")
+  transactionRef String?      @unique
+  paidAt         DateTime     @default(now())
   subscriptionId String
   subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+}
+
+model Credit {
+  id            String          @id
+  customerName  String
+  customerPhone String?
+  totalAmount   Float           @default(0)
+  status        String          @default("PENDING")
+  userId        String
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime
+  User          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  EarningRecord EarningRecord[]
+
+  @@index([customerName])
+}
+
+model InventoryItem {
+  id            String          @id
+  name          String
+  sku           String?
+  category      String          @default("General")
+  unit          String          @default("pcs")
+  costPrice     Float           @default(0)
+  sellingPrice  Float           @default(0)
+  currentStock  Float           @default(0)
+  minStock      Float           @default(0)
+  maxStock      Float?
+  description   String?
+  imageUrl      String?
+  isActive      Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime
+  userId        String
+  User          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  StockMovement StockMovement[]
+
+  @@index([category])
+  @@index([userId])
+}
+
+model StockMovement {
+  id            String        @id
+  type          String
+  quantity      Float
+  note          String?
+  reference     String?
+  createdAt     DateTime      @default(now())
+  itemId        String
+  userId        String
+  InventoryItem InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  User          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([itemId])
 }

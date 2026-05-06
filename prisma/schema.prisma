@@ -99,16 +99,19 @@ model SubscriptionPayment {
 }
 
 model Credit {
-  id            String          @id
+  id            String   @id @default(cuid())
   customerName  String
   customerPhone String?
-  totalAmount   Float           @default(0)
-  status        String          @default("PENDING")
-  userId        String
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime
-  User          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  EarningRecord EarningRecord[]
+  totalAmount   Float    @default(0)
+  direction     String   @default("LINA") // "LINA" (they owe you) | "DINA" (you owe them)
+  status        String   @default("PENDING") // PENDING | SETTLED
+
+  userId  String
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  records EarningRecord[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([customerName])
 }

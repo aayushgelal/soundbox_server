@@ -3,6 +3,13 @@ const mqtt = require('mqtt');
 const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { Pool } = require('pg');
+require('dotenv').config();
+
+
+const mqtt = require('mqtt');
+const { PrismaClient } = require('@prisma/client');
+const { PrismaPg } = require('@prisma/adapter-pg');
+const { Pool } = require('pg');
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
 const adapter = new PrismaPg(pool);
@@ -156,7 +163,7 @@ async function sendCreditUserList(serialNumber, device) {
       id:      c.id,
       name:    c.customerName,
       phone:   c.customerPhone || "",
-      balance: c.totalAmount   // positive = LINA (they owe you)
+      balance: c.totalAmount
     }));
 
     const packet = {
@@ -316,18 +323,14 @@ client.on('message', async (topic, message) => {
     }
 
     // ── 7. CREDIT ENTRY ───────────────────────────────────────────────────
-    // Enter pressed with a credit user selected.
-    // credit_id + direction ("LINA" they owe you, "DINA" you owe them) + amount
+    // Device sends: { type, creditor_id, name, amount, currency }
+    // Direction (LINA/DINA) is a property of the Credit record in DB —
+    // NOT sent by the device. Server looks it up to determine balance delta.
     if (msgType === 'credit_entry') {
-      const { credit_id, name, amount, direction } = payload;
+      const { creditor_id, name, amount } = payload;
 
-      if (!credit_id || !amount || !direction) {
-        console.warn(`⚠️  credit_entry missing fields: credit_id, amount, or direction`);
-        return;
-      }
-
-      if (!['LINA', 'DINA'].includes(direction)) {
-        console.warn(`⚠️  credit_entry invalid direction "${direction}" — must be LINA or DINA`);
+      if (!creditor_id || !amount) {
+        console.warn(`⚠️  credit_entry missing creditor_id or amount`);
         return;
       }
 
@@ -336,12 +339,24 @@ client.on('message', async (topic, message) => {
 
       const parsedAmount = parseFloat(amount);
 
-      // LINA = they owe you → totalAmount increases
-      // DINA = you owe them → totalAmount decreases
-      const delta = direction === 'LINA' ? parsedAmount : -parsedAmount;
-
       try {
-        // 1. Record the individual transaction in EarningRecord
+        // 1. Fetch the Credit record to get the direction set by the merchant
+        const creditRecord = await prisma.credit.findFirst({
+          where: { id: creditor_id, userId: device.userId }
+        });
+
+        if (!creditRecord) {
+          console.warn(`⚠️  Credit record ${creditor_id} not found for this merchant`);
+          return;
+        }
+
+        const direction = creditRecord.direction; // "LINA" | "DINA" — set at creation time
+        // LINA = customer owes merchant → balance increases with each entry
+        // DINA = merchant owes customer → balance increases with each entry
+        // totalAmount always tracks the outstanding amount regardless of direction
+        const delta = parsedAmount; // always increment — direction is context, not sign
+
+        // 2. Record individual transaction in EarningRecord
         const prn = `CREDIT_${Date.now()}`;
         await prisma.earningRecord.create({
           data: {
@@ -353,20 +368,20 @@ client.on('message', async (topic, message) => {
             prn,
             paymentMethod:   "CREDIT",
             source:          "device",
-            creditDirection: direction,   // "LINA" | "DINA"
-            creditId:        credit_id,
+            creditDirection: direction,  // stored for reporting — read from Credit record
+            creditId:        creditor_id,
             userId:          device.userId,
             deviceId:        device.id
           }
         });
 
-        // 2. Update running balance on the Credit record
+        // 3. Update running balance on Credit record
         await prisma.credit.update({
-          where: { id: credit_id },
+          where: { id: creditor_id },
           data:  { totalAmount: { increment: delta } }
         });
 
-        console.log(`💾 Credit saved: ${direction} ${parsedAmount} NPR for ${name}`);
+        console.log(`💾 Credit saved: ${direction} +${parsedAmount} NPR for ${name} | total now ${creditRecord.totalAmount + delta}`);
         playAudio(serialNumber, parsedAmount);
       } catch (err) {
         console.error("🔥 Credit Save Error:", err.message);

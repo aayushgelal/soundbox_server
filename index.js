@@ -1,8 +1,4 @@
-require('dotenv').config();
-const mqtt = require('mqtt');
-const { PrismaClient } = require('@prisma/client');
-const { PrismaPg } = require('@prisma/adapter-pg');
-const { Pool } = require('pg');
+
 require('dotenv').config();
 
 
